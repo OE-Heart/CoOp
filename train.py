@@ -24,7 +24,7 @@ import datasets.imagenet_a
 import datasets.imagenet_r
 
 import trainers.coop
-import trainers.cocoop
+import trainers.retrocoop
 import trainers.zsclip
 
 
@@ -48,6 +48,9 @@ def reset_cfg(cfg, args):
 
     if args.output_dir:
         cfg.OUTPUT_DIR = args.output_dir
+
+    if args.cache_dir:
+        cfg.CACHE_DIR = args.cache_dir
 
     if args.resume:
         cfg.RESUME = args.resume
@@ -94,12 +97,25 @@ def extend_cfg(cfg):
     cfg.TRAINER.COOP.PREC = "fp16"  # fp16, fp32, amp
     cfg.TRAINER.COOP.CLASS_TOKEN_POSITION = "end"  # 'middle' or 'end' or 'front'
 
+    cfg.TRAINER.RETROCOOP = CN()
+    cfg.TRAINER.RETROCOOP.N_CTX = 16  # number of context vectors
+    cfg.TRAINER.RETROCOOP.CSC = False  # class-specific context
+    cfg.TRAINER.RETROCOOP.CTX_INIT = ""  # initialization words
+    cfg.TRAINER.RETROCOOP.PREC = "fp16"  # fp16, fp32, amp
+    cfg.TRAINER.RETROCOOP.CLASS_TOKEN_POSITION = "end"  # 'middle' or 'end' or 'front'
+
     cfg.TRAINER.COCOOP = CN()
     cfg.TRAINER.COCOOP.N_CTX = 16  # number of context vectors
     cfg.TRAINER.COCOOP.CTX_INIT = ""  # initialization words
     cfg.TRAINER.COCOOP.PREC = "fp16"  # fp16, fp32, amp
 
     cfg.DATASET.SUBSAMPLE_CLASSES = "all"  # all, base or new
+
+    cfg.RETRIEVE = CN()
+    cfg.RETRIEVE.load_cache = False
+    cfg.RETRIEVE.augment_epoch = 10
+    cfg.RETRIEVE.topk = 4
+    cfg.RETRIEVE.init_alpha = 1.0
 
 
 def setup_cfg(args):
@@ -154,6 +170,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=str, default="", help="path to dataset")
     parser.add_argument("--output-dir", type=str, default="", help="output directory")
+    parser.add_argument("--cache-dir", type=str, default="", help="cache directory")
     parser.add_argument(
         "--resume",
         type=str,
