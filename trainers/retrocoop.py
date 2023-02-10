@@ -39,6 +39,41 @@ def load_clip_to_cpu(cfg):
     return model
 
 
+def combine_knn_and_vocab_probs(knn_p, vocab_p, coeff=0.5):
+    combine_probs = torch.stack([vocab_p, knn_p], dim=0)
+    coeffs = torch.ones_like(combine_probs)
+    coeffs[0] = np.log(1 - coeff)
+    coeffs[1] = np.log(coeff)
+    curr_prob = torch.logsumexp(combine_probs + coeffs, dim=0)
+
+    return curr_prob
+
+
+class knnLoss(nn.Module):
+    def __init__(self):
+        super(knnLoss, self).__init__()
+
+    def loss(self, logits, knn_logits, targets, coeff):
+        loss = F.cross_entropy(logits, targets, reduction="mean")
+
+        p = knn_logits / torch.sum(knn_logits, -1, keepdims=True)
+        knn_loss = F.nll_loss(torch.clamp(torch.log(p), min=-100),
+            targets, reduction="mean")
+
+        loss = loss + torch.mul(loss, knn_loss * coeff)
+        
+        return torch.sum(loss) / targets.shape[0]
+
+    def forward(
+        self, pred_logits, knn_logits,
+        targets, coeff
+    ):
+        loss = self.loss(
+            pred_logits, knn_logits, targets,
+            coeff)
+        return loss
+
+
 class TextEncoder(nn.Module):
     def __init__(self, clip_model):
         super().__init__()
@@ -66,8 +101,8 @@ class PromptLearner(nn.Module):
     def __init__(self, cfg, classnames, clip_model):
         super().__init__()
         n_cls = len(classnames)
-        n_ctx = cfg.TRAINER.COOP.N_CTX
-        ctx_init = cfg.TRAINER.COOP.CTX_INIT
+        n_ctx = cfg.TRAINER.RETROCOOP.N_CTX
+        ctx_init = cfg.TRAINER.RETROCOOP.CTX_INIT
         dtype = clip_model.dtype
         ctx_dim = clip_model.ln_final.weight.shape[0]
         clip_imsize = clip_model.visual.input_resolution
@@ -86,7 +121,7 @@ class PromptLearner(nn.Module):
 
         else:
             # random initialization
-            if cfg.TRAINER.COOP.CSC:
+            if cfg.TRAINER.RETROCOOP.CSC:
                 print("Initializing class-specific contexts")
                 ctx_vectors = torch.empty(n_cls, n_ctx, ctx_dim, dtype=dtype)
             else:
@@ -118,7 +153,7 @@ class PromptLearner(nn.Module):
         self.n_ctx = n_ctx
         self.tokenized_prompts = tokenized_prompts  # torch.Tensor
         self.name_lens = name_lens
-        self.class_token_position = cfg.TRAINER.COOP.CLASS_TOKEN_POSITION
+        self.class_token_position = cfg.TRAINER.RETROCOOP.CLASS_TOKEN_POSITION
 
     def forward(self):
         ctx = self.ctx
@@ -199,7 +234,6 @@ class CustomCLIP(nn.Module):
         self.datastore = datastore
         self.maskid2labelid = maskid2labelid
         self.topk = cfg.RETRIEVE.topk
-        self.alpha = cfg.RETRIEVE.init_alpha
 
     def forward(self, image):
         image_features = self.image_encoder(image.type(self.dtype))
@@ -225,30 +259,27 @@ class CustomCLIP(nn.Module):
             for j in range(self.topk):
                 knn_logits[i][self.maskid2labelid[I[i][j]]] += soft_knn_i[j]
 
-        logits = clip_logits + knn_logits * self.alpha
-
-        return logits
+        return clip_logits, knn_logits
 
 
 @TRAINER_REGISTRY.register()
 class RetroCoOp(TrainerX):
 
     def check_cfg(self, cfg):
-        assert cfg.TRAINER.COOP.PREC in ["fp16", "fp32", "amp"]
+        assert cfg.TRAINER.RETROCOOP.PREC in ["fp16", "fp32", "amp"]
 
-    def build_knn_datastore(self, cfg, clip_model):
+    def build_knn_datastore(self, cfg, image_encoder):
 
-        if cfg.RETRIEVE.load_cache == False:
+        if cfg.RETRIEVE.load_cache == False or cfg.RETRIEVE.update_cache == True:
             os.makedirs(cfg.CACHE_DIR, exist_ok=True)
 
             cache_keys = []
             cache_values = []
-            clip_model.to(self.device)
+            image_encoder.to(self.device)
 
             with torch.no_grad():
                 # Data augmentation for the cache model
                 for augment_idx in range(cfg.RETRIEVE.augment_epoch):
-                    # import ipdb; ipdb.set_trace()
                     train_features = []
 
                     print('Augment Epoch: {:} / {:}'.format(augment_idx, cfg.RETRIEVE.augment_epoch))
@@ -256,14 +287,12 @@ class RetroCoOp(TrainerX):
                         images = batch["img"]
                         target = batch["label"]
                         images = images.to(self.device)
-                        image_features = clip_model.visual(images)
+                        image_features = image_encoder(images)
                         train_features.append(image_features)
                         if augment_idx == 0:
                             target = target.to(self.device)
                             cache_values.append(target)
                     cache_keys.append(torch.cat(train_features, dim=0).unsqueeze(0))
-
-            clip_model.to("cpu")
 
             cache_keys = torch.cat(cache_keys, dim=0).mean(dim=0)
             cache_keys /= cache_keys.norm(dim=-1, keepdim=True)
@@ -285,6 +314,14 @@ class RetroCoOp(TrainerX):
 
         return index, maskid2labelid
 
+    def after_epoch(self):
+        super().after_epoch()
+
+        if self.cfg.RETRIEVE.update_cache == True:
+            if (self.epoch + 1)  % self.cfg.RETRIEVE.update_epoch == 0:
+                print("Updating knn datastore by few-shot visual features and labels.")
+                self.model.datastore, self.model.maskid2labelid = self.build_knn_datastore(self.cfg, self.model.image_encoder)
+            
     def build_model(self):
         cfg = self.cfg
         classnames = self.dm.dataset.classnames
@@ -292,12 +329,12 @@ class RetroCoOp(TrainerX):
         print(f"Loading CLIP (backbone: {cfg.MODEL.BACKBONE.NAME})")
         clip_model = load_clip_to_cpu(cfg)
         
-        if cfg.TRAINER.COOP.PREC == "fp32" or cfg.TRAINER.COOP.PREC == "amp":
+        if cfg.TRAINER.RETROCOOP.PREC == "fp32" or cfg.TRAINER.RETROCOOP.PREC == "amp":
             # CLIP's default precision is fp16
             clip_model.float()
 
         print("Constructing knn datastore by few-shot visual features and labels.")
-        datastore, maskid2labelid = self.build_knn_datastore(cfg, clip_model)
+        datastore, maskid2labelid = self.build_knn_datastore(cfg, clip_model.visual)
 
         print("Building custom CLIP")
         self.model = CustomCLIP(cfg, classnames, clip_model, datastore, maskid2labelid)
@@ -316,7 +353,9 @@ class RetroCoOp(TrainerX):
         self.sched = build_lr_scheduler(self.optim, cfg.OPTIM)
         self.register_model("prompt_learner", self.model.prompt_learner, self.optim, self.sched)
 
-        self.scaler = GradScaler() if cfg.TRAINER.COOP.PREC == "amp" else None
+        self.scaler = GradScaler() if cfg.TRAINER.RETROCOOP.PREC == "amp" else None
+
+        self.loss_func = knnLoss()
 
         # Note that multi-gpu training could be slow because CLIP's size is
         # big, which slows down the copy operation in DataParallel
@@ -328,19 +367,27 @@ class RetroCoOp(TrainerX):
     def forward_backward(self, batch):
         image, label = self.parse_batch_train(batch)
         
-        prec = self.cfg.TRAINER.COOP.PREC
+        prec = self.cfg.TRAINER.RETROCOOP.PREC
         if prec == "amp":
             with autocast():
-                output = self.model(image)
-                loss = F.cross_entropy(output, label)
+                clip_logits, knn_logits = self.model(image)
+                if self.cfg.RETRIEVE.train_with_knn:
+                    loss = self.loss_func(clip_logits, knn_logits, label, self.cfg.RETRIEVE.beta)
+                else:
+                    loss = F.cross_entropy(clip_logits, label)
             self.optim.zero_grad()
             self.scaler.scale(loss).backward()
             self.scaler.step(self.optim)
             self.scaler.update()
         else:
-            output = self.model(image)
-            loss = F.cross_entropy(output, label)
+            clip_logits, knn_logits = self.model(image)
+            if self.cfg.RETRIEVE.train_with_knn and knn_logits is not None: 
+                loss = self.loss_func(clip_logits, knn_logits, label, self.cfg.RETRIEVE.beta)
+            else:
+                loss = F.cross_entropy(clip_logits, label)
             self.model_backward_and_update(loss)
+
+        output = combine_knn_and_vocab_probs(clip_logits, knn_logits, self.cfg.RETRIEVE.knn_lambda)
 
         loss_summary = {
             "loss": loss.item(),
@@ -351,6 +398,10 @@ class RetroCoOp(TrainerX):
             self.update_lr()
 
         return loss_summary
+
+    def model_inference(self, input):
+        clip_logits, knn_logits = self.model(input)
+        return combine_knn_and_vocab_probs(clip_logits, knn_logits, self.cfg.RETRIEVE.knn_lambda)
 
     def parse_batch_train(self, batch):
         input = batch["img"]

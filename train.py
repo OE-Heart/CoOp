@@ -114,8 +114,12 @@ def extend_cfg(cfg):
     cfg.RETRIEVE = CN()
     cfg.RETRIEVE.load_cache = False
     cfg.RETRIEVE.augment_epoch = 10
+    cfg.RETRIEVE.update_cache = True
+    cfg.RETRIEVE.update_epoch = 1
     cfg.RETRIEVE.topk = 4
-    cfg.RETRIEVE.init_alpha = 1.0
+    cfg.RETRIEVE.knn_lambda = 0.2
+    cfg.RETRIEVE.train_with_knn = True
+    cfg.RETRIEVE.beta = 0.5
 
 
 def setup_cfg(args):
