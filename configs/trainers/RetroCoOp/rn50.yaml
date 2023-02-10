@@ -29,9 +29,9 @@ MODEL:
     NAME: "RN50"
 
 RETRIEVE:
-  # load_cache: False
-  load_cache: True
-  topk: 4
+  load_cache: False
+  # load_cache: True
+  topk: 16
   knn_lambda: 0.2
   # search_hp: True
   # # search_hp: False

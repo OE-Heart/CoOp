@@ -14,8 +14,8 @@ TWK=$7  # train with knn (False or True)
 
 for SEED in 1 2 3
 do
-    OUTPUT_DIR=output/${DATASET}/${TRAINER}/${CFG}_${SHOTS}shots/nctx${NCTX}_csc${CSC}_ctp${CTP}_twk${TWK}/seed${SEED}
-    CACHE_DIR=cache/${DATASET}/${TRAINER}/${CFG}_${SHOTS}shots/nctx${NCTX}_csc${CSC}_ctp${CTP}_twk${TWK}/seed${SEED}
+    OUTPUT_DIR=output/${TRAINER}/${DATASET}/${CFG}_${SHOTS}shots/nctx${NCTX}_csc${CSC}_ctp${CTP}/knn_train_${TWK}/seed${SEED}
+    CACHE_DIR=cache/${DATASET}/${TRAINER}/${CFG}_${SHOTS}shots/nctx${NCTX}_csc${CSC}_ctp${CTP}/knn_train_${TWK}/seed${SEED}
     if [ -d "$DIR" ]; then
         echo "Oops! The results exist at ${DIR} (so skip this job)"
     else
