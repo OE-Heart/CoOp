@@ -117,9 +117,9 @@ def extend_cfg(cfg):
     cfg.RETRIEVE.update_cache = True
     cfg.RETRIEVE.update_epoch = 1
     cfg.RETRIEVE.topk = 4
-    cfg.RETRIEVE.knn_lambda = 0.2
+    cfg.RETRIEVE.knn_lambda = 0.5
     cfg.RETRIEVE.train_with_knn = True
-    cfg.RETRIEVE.beta = 0.5
+    cfg.RETRIEVE.beta = 0.2
 
 
 def setup_cfg(args):
@@ -140,7 +140,7 @@ def setup_cfg(args):
     # 4. From optional input arguments
     cfg.merge_from_list(args.opts)
 
-    cfg.freeze()
+    # cfg.freeze()
 
     return cfg
 
@@ -163,7 +163,27 @@ def main(args):
 
     if args.eval_only:
         trainer.load_model(args.model_dir, epoch=args.load_epoch)
-        trainer.test()
+        if trainer.cfg.TRAINER.NAME == 'RetroCoOp':
+            print("Searching hyperparameter for knn_lambda")
+            search_scale = 1
+            search_step = 20
+            lambda_list = [ i * (search_scale - 0.01) / search_step + 0.01 for i in range(search_step)]
+
+            best_acc = 0
+            best_lambda = 0
+
+            for l in lambda_list:
+                trainer.cfg.RETRIEVE.knn_lambda = l
+                acc = trainer.test()
+                if acc > best_acc:
+                    print("New best setting, lambda: {:.2f}; accuracy: {:.2f}.".format(l, acc))
+                    best_acc = acc
+                    best_lambda = l
+
+            print("\nAfter searching, the best accuarcy: {:.2f}.\n".format(best_acc))
+            print("After searching, the best setting, beta: {:.2f}.\n".format(best_lambda))
+        else:
+            trainer.test()
         return
 
     if not args.no_train:

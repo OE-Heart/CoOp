@@ -32,10 +32,6 @@ RETRIEVE:
   load_cache: False
   # load_cache: True
   topk: 16
-  knn_lambda: 0.2
-  # search_hp: True
-  # # search_hp: False
-  # search_scale: 10
-  # search_step: 100
+  knn_lambda: 0.5
   train_with_knn: True
-  beta: 0.5
+  beta: 0.2

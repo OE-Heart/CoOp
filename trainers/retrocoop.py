@@ -39,8 +39,9 @@ def load_clip_to_cpu(cfg):
     return model
 
 
-def combine_knn_and_vocab_probs(knn_p, vocab_p, coeff=0.5):
-    combine_probs = torch.stack([vocab_p, knn_p], dim=0)
+def combine_knn_and_vocab_probs(clip_logits, knn_logits, coeff=0.5):
+    mask_logits = torch.softmax(clip_logits, dim=-1)
+    combine_probs = torch.stack([mask_logits, knn_logits], dim=0)
     coeffs = torch.ones_like(combine_probs)
     coeffs[0] = np.log(1 - coeff)
     coeffs[1] = np.log(coeff)
